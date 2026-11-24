@@ -140,7 +140,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 </div>
 
 <script>
-const DEFAULT_URL='https://subscribe-cancel-reckless.ngrok-free.dev/v1';
+// Default: proxy di domain sendiri (/api) → nol masalah CORS.
+// Bisa diganti ke URL ngrok langsung lewat ⚙ Server bila dijalankan lokal.
+const DEFAULT_URL='/api';
 const DEFAULT_KEY='ollama-local';
 const SYS_PROMPT='Kamu adalah asisten AI akademik untuk mahasiswa dan dosen Polimdo. Jawab selalu dalam Bahasa Indonesia yang jelas, terstruktur, dan membantu. Untuk pertanyaan teknis beri langkah-langkah. Akhiri jawaban panjang dengan pengingat singkat untuk memverifikasi informasi penting.';
 let cfg=JSON.parse(localStorage.getItem('ai_cfg')||'null')||{url:DEFAULT_URL,key:DEFAULT_KEY};
