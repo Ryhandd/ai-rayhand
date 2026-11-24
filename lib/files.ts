@@ -1,4 +1,11 @@
-import { MAX_FILE_CHARS, MAX_FILE_BYTES, MAX_PDF_PAGES, TEXT_EXT } from './config';
+import {
+  MAX_FILE_CHARS,
+  MAX_FILE_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_SIDE,
+  MAX_PDF_PAGES,
+  TEXT_EXT,
+} from './config';
 import { extOf } from './storage';
 
 function loadScript(src: string): Promise<void> {
@@ -68,8 +75,6 @@ export async function extractText(file: File): Promise<string> {
     file.type === 'application/json'
   ) {
     text = await file.text();
-  } else if (file.type.startsWith('image/')) {
-    throw new Error('gambar belum didukung model teks ini');
   } else {
     text = await file.text();
   }
@@ -81,4 +86,49 @@ export async function extractText(file: File): Promise<string> {
       `\n\n[... dipotong, total ${text.length.toLocaleString('id-ID')} karakter]`;
   }
   return text;
+}
+
+export function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(extOf(file.name));
+}
+
+/**
+ * Perkecil gambar di browser lalu ubah menjadi data URL.
+ *
+ * Alasan: model vision lokal (moondream) tetap bisa membaca teks pada gambar
+ * 1280 px, sedangkan gambar 4000 px hanya memboroskan bandwidth dan token
+ * (tiap potongan gambar menambah ribuan token prompt).
+ */
+export function imageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (file.size > MAX_IMAGE_BYTES * 2) {
+      reject(new Error('gambar melebihi 8 MB'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('gagal membaca gambar'));
+    reader.onload = () => {
+      const raw = String(reader.result);
+      const img = new Image();
+      img.onerror = () => reject(new Error('berkas gambar rusak'));
+      img.onload = () => {
+        const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(raw); // tidak bisa kompres — kirim apa adanya
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        // 0.85 cukup tajam untuk OCR dan jauh lebih kecil dari PNG.
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = raw;
+    };
+    reader.readAsDataURL(file);
+  });
 }

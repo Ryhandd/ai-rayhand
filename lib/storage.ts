@@ -89,9 +89,12 @@ export function extOf(name: string): string {
   return parts.length > 1 ? parts.pop()!.toLowerCase() : '';
 }
 
-/** Susun isi pesan: teks pengguna + isi dokumen terlampir. */
+/** Penanda awal blok dokumen — dipakai Message.tsx untuk menyembunyikan isi asli. */
+export const DOC_MARKER = '\n\nDokumen terlampir:';
+
+/** Susun isi pesan: teks pengguna + isi dokumen terlampir (gambar dikirim terpisah). */
 export function composeContent(text: string, files: Attachment[]): string {
-  const ready = files.filter((f) => !f.loading && !f.error && f.text);
+  const ready = files.filter((f) => f.kind === 'text' && !f.loading && !f.error && f.text);
   if (!ready.length) return text;
   const docs = ready
     .map((f) => `--- FILE: ${f.name} ---\n${f.text}\n--- AKHIR ${f.name} ---`)

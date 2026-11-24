@@ -1,5 +1,5 @@
-import type { Conversation, ModelInfo, Settings } from './types';
-import { apiBase, headers } from './config';
+import type { Conversation, ModelInfo, Msg, Settings } from './types';
+import { apiBase, headers, VISION_MODELS } from './config';
 
 export class ChatError extends Error {
   detail?: string[];
@@ -26,6 +26,51 @@ export async function fetchModels(s: Settings, signal?: AbortSignal): Promise<Mo
   return list;
 }
 
+/** Pilih model vision pertama yang tersedia di server. */
+export function pickVisionModel(models: string[]): string | null {
+  for (const m of VISION_MODELS) {
+    if (models.includes(m)) return m;
+  }
+  return models.find((m) => /vl|vision|llava|moondream/i.test(m)) ?? null;
+}
+
+interface ContentPart {
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string };
+}
+
+/**
+ * Ubah riwayat percakapan menjadi format OpenAI.
+ *
+ * Pesan yang punya gambar dikirim sebagai array `content` berisi teks +
+ * `image_url` (data URL base64). Format ini didukung Ollama untuk model
+ * vision seperti moondream dan qwen2.5vl.
+ */
+function toApiMessages(systemPrompt: string, msgs: Msg[]) {
+  const out: { role: string; content: string | ContentPart[] }[] = [
+    { role: 'system', content: systemPrompt },
+  ];
+
+  for (const m of msgs) {
+    // Gambar hanya pada pesan pengguna terakhir — mengirim ulang semua gambar
+    // lama membuat prompt membengkak tanpa manfaat.
+    const lastUser = msgs.filter((x) => x.role === 'user').at(-1);
+    const isLastUser = m.role === 'user' && m.id === lastUser?.id;
+    const imgs = isLastUser ? (m.images ?? []) : [];
+
+    if (imgs.length) {
+      const parts: ContentPart[] = [];
+      if (m.content.trim()) parts.push({ type: 'text', text: m.content });
+      for (const url of imgs) parts.push({ type: 'image_url', image_url: { url } });
+      out.push({ role: m.role, content: parts });
+    } else {
+      out.push({ role: m.role, content: m.content });
+    }
+  }
+  return out;
+}
+
 export interface StreamResult {
   content: string;
   reasoning: string;
@@ -48,21 +93,18 @@ export async function streamChat({
   onDelta,
   onReasoning,
 }: StreamOpts): Promise<StreamResult> {
-  const messages = [
-    { role: 'system', content: settings.systemPrompt },
-    ...conv.msgs.map((m) => ({ role: m.role, content: m.content })),
-  ];
-
+  const hasImage = conv.msgs.some((m) => m.images?.length);
   const body: Record<string, unknown> = {
     model,
-    messages,
+    messages: toApiMessages(settings.systemPrompt, conv.msgs),
     stream: true,
     temperature: settings.temperature,
   };
 
   // Qwen3: tanpa ini model menghabiskan seluruh token untuk berpikir dan
   // `content` tetap kosong. `reasoning_effort: "none"` mematikan mode thinking.
-  if (!settings.thinking) body.reasoning_effort = 'none';
+  // Model vision tidak punya mode berpikir, jadi jangan dikirim.
+  if (!settings.thinking && !hasImage) body.reasoning_effort = 'none';
 
   const res = await fetch(`${apiBase(settings)}/chat/completions`, {
     method: 'POST',

@@ -2,17 +2,22 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Attachment } from '@/lib/types';
-import { extractText } from '@/lib/files';
+import { extractText, imageToDataUrl, isImageFile } from '@/lib/files';
 import { MAX_FILE_BYTES } from '@/lib/config';
 import { uid } from '@/lib/storage';
 
-/** Kelola lampiran: baca file, drag & drop, dan paste dari clipboard. */
+/** Kelola lampiran: dokumen (teks) dan gambar (vision). */
 export function useAttachments(onToast: (t: string) => void) {
   const [items, setItems] = useState<Attachment[]>([]);
   const [dragging, setDragging] = useState(false);
   const depth = useRef(0);
   const itemsRef = useRef<Attachment[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const onToastRef = useRef(onToast);
+
+  useEffect(() => {
+    onToastRef.current = onToast;
+  }, [onToast]);
 
   useEffect(() => {
     itemsRef.current = items;
@@ -30,31 +35,50 @@ export function useAttachments(onToast: (t: string) => void) {
 
       const queued: { file: File; att: Attachment }[] = [];
       for (const f of list) {
+        const image = isImageFile(f);
         if (f.size > MAX_FILE_BYTES) {
-          onToast(`${f.name} melebihi 20 MB`);
+          onToastRef.current(`${f.name} melebihi 20 MB`);
           continue;
         }
         queued.push({
           file: f,
-          att: { id: uid('f'), name: f.name, size: f.size, text: '', loading: true },
+          att: {
+            id: uid('f'),
+            name: f.name,
+            size: f.size,
+            text: '',
+            kind: image ? 'image' : 'text',
+            loading: true,
+          },
         });
       }
       if (!queued.length) return;
 
       set([...itemsRef.current, ...queued.map((q) => q.att)]);
-      onToast(`${queued.length} file diproses…`);
+      onToastRef.current(`${queued.length} lampiran diproses…`);
 
       for (const { file, att } of queued) {
         try {
-          const text = await extractText(file);
-          set(itemsRef.current.map((a) => (a.id === att.id ? { ...a, text, loading: false } : a)));
+          if (att.kind === 'image') {
+            const dataUrl = await imageToDataUrl(file);
+            set(
+              itemsRef.current.map((a) =>
+                a.id === att.id ? { ...a, dataUrl, loading: false } : a,
+              ),
+            );
+          } else {
+            const text = await extractText(file);
+            set(
+              itemsRef.current.map((a) => (a.id === att.id ? { ...a, text, loading: false } : a)),
+            );
+          }
         } catch (e) {
-          onToast(`${att.name}: ${(e as Error).message || 'gagal dibaca'}`);
+          onToastRef.current(`${att.name}: ${(e as Error).message || 'gagal dibaca'}`);
           set(itemsRef.current.filter((a) => a.id !== att.id));
         }
       }
     },
-    [onToast, set],
+    [set],
   );
 
   const remove = useCallback(
@@ -103,7 +127,7 @@ export function useAttachments(onToast: (t: string) => void) {
     };
   }, [ingest]);
 
-  // paste file dari clipboard
+  // paste dari clipboard: file atau gambar hasil screenshot
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
       const files = Array.from(e.clipboardData?.items ?? [])

@@ -38,7 +38,7 @@ const ALLOWED = ['models', 'chat/completions', 'completions', 'embeddings'];
 
 /** Batas tunggu sampai byte pertama, bukan sampai jawaban selesai. */
 const FIRST_BYTE_MS = 120_000;
-const MAX_BODY_BYTES = 1_000_000; // 1 MB cukup untuk prompt + dokumen
+const MAX_BODY_BYTES = 6_000_000; // 6 MB — cukup untuk prompt + 1-2 gambar base64
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {

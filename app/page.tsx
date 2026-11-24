@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Message from '@/components/Message';
 import ModelPicker from '@/components/ModelPicker';
+import ModePicker from '@/components/ModePicker';
 import SettingsModal from '@/components/SettingsModal';
 import CommandMenu from '@/components/CommandMenu';
-import { streamChat, fetchModels, ChatError } from '@/lib/api';
-import { SUGGESTIONS, DEFAULT_MODEL } from '@/lib/config';
+import { streamChat, fetchModels, pickVisionModel, ChatError } from '@/lib/api';
+import { DEFAULT_MODEL, VISION_MODEL } from '@/lib/config';
+import { PRESETS, getPreset } from '@/lib/presets';
+import { parseImageRequest, generateImage } from '@/lib/imagegen';
 import {
   runCommand,
   useCommandMenu,
@@ -47,16 +50,33 @@ export default function Page() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const att = useAttachments(useCallback((t: string) => toast(t), [])); // eslint-disable-line
-
-  const cur = useMemo(() => convs.find((c) => c.id === curId) ?? null, [convs, curId]);
-
   /* ---------- toast ---------- */
   const toast = useCallback((msg: string) => {
     setToastMsg(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToastMsg(''), 2600);
   }, []);
+
+  const att = useAttachments(toast);
+
+  const preset = useMemo(() => getPreset(settings.mode), [settings.mode]);
+
+  const cur = useMemo(() => convs.find((c) => c.id === curId) ?? null, [convs, curId]);
+
+  /* ---------- ganti mode akademik ---------- */
+  const setMode = useCallback(
+    (id: string) => {
+      const p = getPreset(id);
+      setSettings((s) => ({
+        ...s,
+        mode: p.id,
+        systemPrompt: p.systemPrompt,
+        temperature: p.temperature,
+      }));
+      toast(`Mode → ${p.title}`);
+    },
+    [toast],
+  );
 
   /* ---------- init ---------- */
   useEffect(() => {
@@ -89,12 +109,13 @@ export default function Page() {
     try {
       const models = await fetchModels(settings, ctl.signal);
       clearTimeout(timer);
+      const ids = models.map((m) => m.id);
       setModelCount(models.length);
-      setAllModels(models.map((m) => m.id));
+      setAllModels(ids);
       setOnline('on');
-      if (!models.some((m) => m.id === settings.model)) {
-        const prefer = models.find((m) => m.id === DEFAULT_MODEL) ?? models[0];
-        setSettings((s) => ({ ...s, model: prefer.id }));
+      if (!ids.includes(settings.model)) {
+        const prefer = ids.find((m) => m === DEFAULT_MODEL) ?? ids[0];
+        setSettings((s) => ({ ...s, model: prefer }));
       }
     } catch {
       clearTimeout(timer);
@@ -258,6 +279,10 @@ export default function Page() {
     const lines = [`# ${cur.title}`, ''];
     for (const m of cur.msgs) {
       lines.push(m.role === 'user' ? '## Anda' : `## AI Rayhand${m.model ? ` (${m.model})` : ''}`);
+      if (m.generated) {
+        lines.push('', `![${m.generated.prompt}](${m.generated.url})`, '');
+        continue;
+      }
       if (m.reasoning) {
         lines.push('<details><summary>Proses berpikir</summary>', '', m.reasoning, '', '</details>');
       }
@@ -277,8 +302,9 @@ export default function Page() {
       models: allModels,
       clearChat,
       exportChat,
+      setMode,
     }),
-    [settings, toast, newChat, allModels, clearChat, exportChat],
+    [settings, toast, newChat, allModels, clearChat, exportChat, setMode],
   );
 
   const cmdMenu = useCommandMenu(input);
@@ -301,6 +327,48 @@ export default function Page() {
     }
   };
 
+  /* ---------- generate gambar ---------- */
+  const runImageGen = useCallback(
+    async (conv: Conversation, prompt: string, size: 'square' | 'landscape' | 'portrait') => {
+      setBusy(true);
+      setError(null);
+      setStreamText('');
+      setStreamThink('');
+      try {
+        const url = await generateImage(prompt, size);
+        setConvs((prev) => {
+          const next = prev.map((c) =>
+            c.id === conv.id
+              ? {
+                  ...c,
+                  msgs: [
+                    ...c.msgs,
+                    {
+                      id: uid('m'),
+                      role: 'assistant' as const,
+                      content: '',
+                      generated: { url, prompt },
+                      model: 'pollinations/flux',
+                      ts: Date.now(),
+                    },
+                  ],
+                }
+              : c,
+          );
+          return saveConversations(next);
+        });
+      } catch (e) {
+        setError({
+          msg: `Gambar gagal dibuat: ${(e as Error).message}`,
+          detail: ['Layanan gambar berjalan di luar sandbox (Pollinations.AI). Coba lagi atau ubah deskripsi.'],
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
   const send = useCallback(async () => {
     if (busy) return;
 
@@ -316,9 +384,12 @@ export default function Page() {
       return;
     }
 
-    const ready = att.items.filter((f) => !f.loading && f.text);
+    const ready = att.items.filter((f) => f.kind === 'text' && !f.loading && f.text);
+    const imgs = att.items
+      .filter((f) => f.kind === 'image' && !f.loading && f.dataUrl)
+      .map((f) => f.dataUrl!);
     const text = input.trim();
-    if (!text && !ready.length) return;
+    if (!text && !ready.length && !imgs.length) return;
 
     let conv = cur;
     if (!conv) {
@@ -334,12 +405,16 @@ export default function Page() {
       role: 'user' as const,
       content,
       files,
+      images: imgs.length ? imgs : undefined,
       ts: Date.now(),
     };
 
     const updated: Conversation = {
       ...conv,
-      title: conv.title === 'Chat Baru' ? (text || files[0]?.name || 'Dokumen').slice(0, 44) : conv.title,
+      title:
+        conv.title === 'Chat Baru'
+          ? (text || files[0]?.name || 'Dokumen').slice(0, 44)
+          : conv.title,
       msgs: [...conv.msgs, userMsg],
     };
 
@@ -354,8 +429,43 @@ export default function Page() {
     setError(null);
     if (taRef.current) taRef.current.style.height = 'auto';
 
-    await runStream(updated, settings.model);
-  }, [att, busy, cmdCtx, convs, cur, input, persist, runStream, settings.model, toast]);
+    // Permintaan gambar? Tangan ke layanan gambar, bukan ke LLM teks.
+    const gen = parseImageRequest(text);
+    if (gen && !imgs.length) {
+      await runImageGen(updated, gen.prompt, gen.size);
+      return;
+    }
+
+    // Ada gambar → pakai model vision, karena model teks buta gambar.
+    let model = settings.model;
+    if (imgs.length) {
+      const vm = pickVisionModel(allModels);
+      if (vm) {
+        model = vm;
+      } else {
+        setError({
+          msg: 'Model pembaca gambar belum tersedia di server',
+          detail: [`Model yang ada: ${allModels.join(', ') || '(kosong)'}`],
+        });
+        return;
+      }
+    }
+
+    await runStream(updated, model);
+  }, [
+    att,
+    busy,
+    cmdCtx,
+    convs,
+    cur,
+    input,
+    persist,
+    runStream,
+    runImageGen,
+    settings.model,
+    allModels,
+    toast,
+  ]);
 
   const regenerate = useCallback(
     (msgIndex: number) => {
@@ -472,6 +582,9 @@ export default function Page() {
             online={online === 'on'}
             onChange={(m) => setSettings((s) => ({ ...s, model: m }))}
           />
+          <div className="mt-3 border-t border-ink-600 pt-3">
+            <ModePicker mode={settings.mode} onChange={setMode} />
+          </div>
           <div className="mt-3 flex gap-3.5 border-t border-ink-600 pt-2.5">
             <button
               onClick={() => setSettingsOpen(true)}
@@ -536,23 +649,27 @@ export default function Page() {
         <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-0 pb-2.5 pt-6">
           <div className="mx-auto max-w-[780px] px-[18px]">
             {!cur?.msgs.length && !busy ? (
-              <div className="mx-auto mt-[7vh] max-w-[660px] text-center">
-                <div className="mx-auto mb-5 grid h-[62px] w-[62px] place-items-center rounded-[19px] bg-gradient-to-br from-accent-500 to-violet-500 text-[29px] text-white shadow-[0_8px_30px_rgba(91,140,255,.32)]">
-                  ✦
+              <div className="mx-auto mt-[6vh] max-w-[660px] text-center">
+                <div className="mx-auto mb-4 grid h-[58px] w-[58px] place-items-center rounded-[18px] bg-gradient-to-br from-accent-500 to-violet-500 text-[26px] text-white shadow-[0_8px_30px_rgba(91,140,255,.32)]">
+                  {preset.icon}
                 </div>
-                <h2 className="mb-2 text-[23px] font-bold tracking-tight">
-                  Ada yang bisa saya bantu?
-                </h2>
-                <p className="mx-auto max-w-[460px] text-[13.5px] leading-relaxed text-dim">
-                  Asisten AI akademik — ditenagai model open-source di cloud.
-                  <br />
-                  Lampirkan file dengan 📎, <b className="text-[#c8d3e8]">tarik-lepas</b>, atau{' '}
-                  <b className="text-[#c8d3e8]">tempel</b> (Ctrl+V).
+                <h2 className="mb-1.5 text-[22px] font-bold tracking-tight">{preset.title}</h2>
+                <p className="mx-auto max-w-[480px] text-[13px] leading-relaxed text-dim">
+                  {preset.desc}
                 </p>
-                <div className="mt-7 grid gap-2.5 sm:grid-cols-2">
-                  {SUGGESTIONS.map((s) => (
+                <p className="mx-auto mt-2 max-w-[480px] text-[11.5px] leading-relaxed text-faint">
+                  📎 lampirkan dokumen atau gambar · tarik-lepas · tempel Ctrl+V ·{' '}
+                  <code className="rounded bg-ink-800 px-1 py-px">gambar: …</code> untuk membuat gambar
+                </p>
+                {preset.needsDoc && (
+                  <div className="mx-auto mt-3 max-w-[460px] rounded-lg border border-[rgba(255,183,77,.3)] bg-[rgba(255,183,77,.06)] px-3 py-2 text-[11.5px] text-[#ffb74d]">
+                    Mode ini paling akurat bila Anda melampirkan dokumen lebih dulu (± 100 karakter).
+                  </div>
+                )}
+                <div className="mt-6 grid gap-2.5 sm:grid-cols-2">
+                  {preset.starters.map((s) => (
                     <button
-                      key={s.title}
+                      key={s.label}
                       onClick={() => {
                         setInput(s.prompt);
                         taRef.current?.focus();
@@ -560,10 +677,10 @@ export default function Page() {
                       }}
                       className="rounded-xl border border-ink-600 bg-ink-750 p-3.5 text-left transition-all hover:-translate-y-px hover:border-accent-500 hover:bg-ink-700"
                     >
-                      <div className="mb-0.5 text-[12.5px] font-semibold">
-                        {s.icon} {s.title}
+                      <div className="mb-0.5 text-[12.5px] font-semibold">{s.label}</div>
+                      <div className="line-clamp-2 text-[11.5px] leading-relaxed text-faint">
+                        {s.prompt.slice(0, 90).replace(/\n/g, ' ')}
                       </div>
-                      <div className="text-[11.5px] text-faint">{s.detail}</div>
                     </button>
                   ))}
                 </div>
@@ -640,7 +757,7 @@ export default function Page() {
                   <div className="mb-3 text-[44px]">📥</div>
                   <h3 className="text-[17px] font-semibold">Lepaskan file di sini</h3>
                   <p className="mt-1.5 text-[12.5px] text-dim">
-                    PDF · DOCX · TXT · MD · CSV · JSON · kode
+                    PDF · DOCX · TXT · MD · CSV · JSON · kode · gambar
                   </p>
                 </div>
               </div>
@@ -655,7 +772,17 @@ export default function Page() {
                       f.loading ? 'opacity-60' : ''
                     }`}
                   >
-                    <span className="shrink-0">{f.loading ? '⏳' : '📄'}</span>
+                    <span className="shrink-0">
+                      {f.loading ? '⏳' : f.kind === 'image' ? '🖼️' : '📄'}
+                    </span>
+                    {f.kind === 'image' && f.dataUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={f.dataUrl}
+                        alt={f.name}
+                        className="h-[26px] w-[26px] shrink-0 rounded object-cover"
+                      />
+                    ) : null}
                     <span className="flex-1 truncate" title={f.name}>
                       {f.name}
                     </span>
@@ -682,6 +809,7 @@ export default function Page() {
                 ref={att.inputRef}
                 type="file"
                 multiple
+                accept=".pdf,.docx,.txt,.md,.csv,.json,.log,.py,.js,.ts,.html,.css,.sql,.png,.jpg,.jpeg,.webp,.bmp,.gif,image/*"
                 className="hidden"
                 onChange={(e) => {
                   if (e.target.files) void att.ingest(e.target.files);
@@ -717,7 +845,7 @@ export default function Page() {
                       );
                       return;
                     }
-                    if (e.key === 'Tab' || (e.key === 'Enter' && cmdMenu.items.length === 1)) {
+                    if (e.key === 'Tab' || (e.key === 'Enter' && cmdMenu.items.length === 1 && !input.includes(' '))) {
                       const hit = cmdMenu.items[cmdMenu.selected];
                       if (hit) {
                         e.preventDefault();
@@ -736,7 +864,11 @@ export default function Page() {
                     void send();
                   }
                 }}
-                placeholder="Tulis pesan…"
+                placeholder={
+                  preset.id === 'umum'
+                    ? 'Tulis pesan… atau "gambar: kucing oren" untuk membuat gambar'
+                    : `Tulis pesan untuk mode ${preset.title}…`
+                }
                 className="max-h-[180px] flex-1 resize-none bg-transparent py-1 text-[14.5px] leading-relaxed outline-none placeholder:text-faint"
               />
               <button

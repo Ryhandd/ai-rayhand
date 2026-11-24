@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Settings } from '@/lib/types';
 import { DEFAULT_MODEL, PUBLIC_ENDPOINT } from '@/lib/config';
+import { PRESETS, getPreset } from '@/lib/presets';
 
 /** Perintah yang tersedia. */
 export interface Command {
@@ -22,9 +23,33 @@ export interface CommandCtx {
   models: string[];
   clearChat: () => void;
   exportChat: () => string;
+  /** Nyalakan mode akademik: ganti preset + prompt sistem sekaligus. */
+  setMode: (id: string) => void;
 }
 
 export const COMMANDS: Command[] = [
+  {
+    name: '/mode',
+    args: '[nama]',
+    desc: 'Ganti mode akademik (umum, viva, rps, rag, eyd). Tanpa argumen: tampilkan daftar.',
+    run: (arg, ctx) => {
+      const want = arg.trim().toLowerCase();
+      if (!want) {
+        ctx.toast(`Mode: ${PRESETS.map((p) => p.id).join(', ')} — sekarang: ${ctx.settings.mode}`);
+        return;
+      }
+      const hit =
+        PRESETS.find((p) => p.id === want) ??
+        PRESETS.find((p) => p.title.toLowerCase().includes(want)) ??
+        PRESETS.find((p) => p.short.toLowerCase().includes(want));
+      if (!hit) {
+        ctx.toast(`Mode "${want}" tidak ada. Pilihan: ${PRESETS.map((p) => p.id).join(', ')}`);
+        return;
+      }
+      ctx.setMode(hit.id);
+      ctx.toast(`Mode → ${hit.title}`);
+    },
+  },
   {
     name: '/model',
     args: '<nama>',
@@ -37,7 +62,6 @@ export const COMMANDS: Command[] = [
         );
         return;
       }
-      // cocokkan persis dulu, lalu sebagian (tanpa lihat huruf besar/kecil)
       const hit =
         ctx.models.find((m) => m === want) ??
         ctx.models.find((m) => m.toLowerCase() === want.toLowerCase()) ??
@@ -51,33 +75,28 @@ export const COMMANDS: Command[] = [
     },
   },
   {
+    name: '/img',
+    args: '<deskripsi>',
+    desc: 'Buat gambar dari deskripsi teks. Contoh: /img kucing oren sedang belajar.',
+    run: (arg, ctx) => {
+      const p = arg.trim();
+      if (!p) {
+        ctx.toast('Tulis deskripsi gambar. Contoh: /img pemandangan gunung saat fajar');
+        return;
+      }
+      ctx.setInput(`gambar: ${p}`);
+      ctx.toast('Tekan Enter untuk membuat gambar');
+    },
+  },
+  {
     name: '/think',
     args: '[on|off]',
-    desc: 'Tampilkan proses berpikir Qwen3 sebelum menjawab.',
+    desc: 'Tampilkan proses berpikir model sebelum menjawab.',
     run: (arg, ctx) => {
       const a = arg.trim().toLowerCase();
       const on = a ? a === 'on' || a === 'true' || a === '1' : !ctx.settings.thinking;
       ctx.setSettings({ ...ctx.settings, thinking: on });
       ctx.toast(`Mode berpikir: ${on ? 'AKTIF' : 'mati'}`);
-    },
-  },
-  {
-    name: '/temp',
-    args: '[0-1.5]',
-    desc: 'Atur temperature (kreativitas). Tanpa argumen, tampilkan nilai sekarang.',
-    run: (arg, ctx) => {
-      const a = arg.trim();
-      if (!a) {
-        ctx.toast(`Temperature: ${ctx.settings.temperature.toFixed(1)}`);
-        return;
-      }
-      const n = Number(a);
-      if (!Number.isFinite(n) || n < 0 || n > 1.5) {
-        ctx.toast('Temperature harus angka 0–1.5');
-        return;
-      }
-      ctx.setSettings({ ...ctx.settings, temperature: n });
-      ctx.toast(`Temperature → ${n.toFixed(1)}`);
     },
   },
   {
@@ -101,27 +120,11 @@ export const COMMANDS: Command[] = [
     run: (arg, ctx) => {
       const a = arg.trim();
       if (!a) {
-        ctx.toast(`Base URL: ${ctx.settings.url}`);
+        ctx.toast(`Base URL: ${ctx.settings.url === '/api' ? PUBLIC_ENDPOINT : ctx.settings.url}`);
         return;
       }
       ctx.setSettings({ ...ctx.settings, url: a.replace(/\/+$/, '') });
       ctx.toast(`Base URL → ${a}`);
-    },
-  },
-  {
-    name: '/reset',
-    args: '',
-    desc: 'Kembalikan pengaturan ke bawaan (model Qwen3 8B).',
-    run: (_arg, ctx) => {
-      ctx.setSettings({
-        url: '/api',
-        key: ctx.settings.key,
-        model: DEFAULT_MODEL,
-        temperature: 0.7,
-        thinking: false,
-        systemPrompt: ctx.settings.systemPrompt,
-      });
-      ctx.toast('Pengaturan direset');
     },
   },
   {
@@ -164,10 +167,11 @@ export const COMMANDS: Command[] = [
   {
     name: '/info',
     args: '',
-    desc: 'Tampilkan model aktif, temperature, dan endpoint.',
+    desc: 'Tampilkan mode, model aktif, dan endpoint.',
     run: (_arg, ctx) => {
+      const p = getPreset(ctx.settings.mode);
       ctx.toast(
-        `${ctx.settings.model} · temp ${ctx.settings.temperature.toFixed(1)} · ${
+        `${p.title} · ${ctx.settings.model} · ${
           ctx.settings.url === '/api' ? PUBLIC_ENDPOINT : ctx.settings.url
         }`,
       );
@@ -228,3 +232,5 @@ export function useCommandMenu(input: string) {
     open: items.length > 0,
   };
 }
+
+export { DEFAULT_MODEL };
