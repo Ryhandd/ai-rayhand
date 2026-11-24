@@ -26,12 +26,18 @@ export async function fetchModels(s: Settings, signal?: AbortSignal): Promise<Mo
   return list;
 }
 
+export interface StreamResult {
+  content: string;
+  reasoning: string;
+}
+
 interface StreamOpts {
   settings: Settings;
   conv: Conversation;
   model: string;
   signal: AbortSignal;
   onDelta: (chunk: string, full: string) => void;
+  onReasoning?: (full: string) => void;
 }
 
 export async function streamChat({
@@ -40,23 +46,30 @@ export async function streamChat({
   model,
   signal,
   onDelta,
-}: StreamOpts): Promise<string> {
+  onReasoning,
+}: StreamOpts): Promise<StreamResult> {
   const messages = [
     { role: 'system', content: settings.systemPrompt },
     ...conv.msgs.map((m) => ({ role: m.role, content: m.content })),
   ];
+
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    stream: true,
+    temperature: settings.temperature,
+  };
+
+  // Qwen3: tanpa ini model menghabiskan seluruh token untuk berpikir dan
+  // `content` tetap kosong. `reasoning_effort: "none"` mematikan mode thinking.
+  if (!settings.thinking) body.reasoning_effort = 'none';
 
   const res = await fetch(`${apiBase(settings)}/chat/completions`, {
     method: 'POST',
     headers: headers(settings),
     signal,
     cache: 'no-store',
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: true,
-      temperature: settings.temperature,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -78,6 +91,7 @@ export async function streamChat({
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
+  let think = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -94,12 +108,27 @@ export async function streamChat({
       if (!payload || payload === '[DONE]') continue;
       try {
         const json = JSON.parse(payload) as {
-          choices?: { delta?: { content?: string } }[];
+          choices?: {
+            delta?: {
+              content?: string;
+              // Ollama menamai field penalaran Qwen3 `reasoning`,
+              // bukan `reasoning_content` seperti banyak dokumentasi lain.
+              reasoning?: string;
+              reasoning_content?: string;
+            };
+          }[];
         };
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) {
-          full += delta;
-          onDelta(delta, full);
+        const d = json.choices?.[0]?.delta;
+        if (!d) continue;
+
+        const r = d.reasoning ?? d.reasoning_content;
+        if (r) {
+          think += r;
+          onReasoning?.(think);
+        }
+        if (d.content) {
+          full += d.content;
+          onDelta(d.content, full);
         }
       } catch {
         /* potongan JSON belum utuh — lanjut */
@@ -107,6 +136,8 @@ export async function streamChat({
     }
   }
 
-  if (!full.trim()) throw new ChatError('Model mengembalikan jawaban kosong');
-  return full;
+  if (!full.trim() && !think.trim()) {
+    throw new ChatError('Model mengembalikan jawaban kosong');
+  }
+  return { content: full, reasoning: think };
 }

@@ -3,6 +3,12 @@ import type { Settings } from './types';
 export const DEFAULT_URL = '/api';
 export const DEFAULT_KEY = 'ollama-local';
 
+/** Model default: Qwen3 8B (Q4_K_M) di instabox. */
+export const DEFAULT_MODEL = 'qwen3:8b-q4_K_M';
+
+/** Domain tetap ngrok → sandbox instabox. Dipakai untuk dokumentasi & fallback. */
+export const PUBLIC_ENDPOINT = 'https://subscribe-cancel-reckless.ngrok-free.dev';
+
 export const DEFAULT_SYSTEM_PROMPT = `Kamu adalah asisten AI akademik untuk mahasiswa dan dosen Politeknik Negeri Manado (Polimdo).
 
 Aturan:
@@ -16,8 +22,9 @@ Aturan:
 export const DEFAULT_SETTINGS: Settings = {
   url: DEFAULT_URL,
   key: DEFAULT_KEY,
-  model: 'gpt-oss:20b',
+  model: DEFAULT_MODEL,
   temperature: 0.7,
+  thinking: false,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
 };
 

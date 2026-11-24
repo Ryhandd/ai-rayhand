@@ -18,6 +18,8 @@ export interface Msg {
   id: string;
   role: Role;
   content: string;
+  /** Proses berpikir Qwen3, bila mode thinking aktif. */
+  reasoning?: string;
   files?: FileMeta[];
   model?: string;
   ts: number;
@@ -35,6 +37,8 @@ export interface Settings {
   key: string;
   model: string;
   temperature: number;
+  /** Qwen3: tampilkan proses berpikir sebelum menjawab. */
+  thinking: boolean;
   systemPrompt: string;
 }
 

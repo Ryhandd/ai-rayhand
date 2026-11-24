@@ -4,8 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Message from '@/components/Message';
 import ModelPicker from '@/components/ModelPicker';
 import SettingsModal from '@/components/SettingsModal';
+import CommandMenu from '@/components/CommandMenu';
 import { streamChat, fetchModels, ChatError } from '@/lib/api';
-import { SUGGESTIONS } from '@/lib/config';
+import { SUGGESTIONS, DEFAULT_MODEL } from '@/lib/config';
+import {
+  runCommand,
+  useCommandMenu,
+  type Command,
+  type CommandCtx,
+} from '@/lib/commands';
 import {
   composeContent,
   loadConversations,
@@ -27,9 +34,11 @@ export default function Page() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [streamText, setStreamText] = useState('');
+  const [streamThink, setStreamThink] = useState('');
   const [error, setError] = useState<{ msg: string; detail?: string[] } | null>(null);
   const [online, setOnline] = useState<'wait' | 'on' | 'off'>('wait');
   const [modelCount, setModelCount] = useState(0);
+  const [allModels, setAllModels] = useState<string[]>([]);
   const [sbOpen, setSbOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
@@ -81,9 +90,11 @@ export default function Page() {
       const models = await fetchModels(settings, ctl.signal);
       clearTimeout(timer);
       setModelCount(models.length);
+      setAllModels(models.map((m) => m.id));
       setOnline('on');
       if (!models.some((m) => m.id === settings.model)) {
-        setSettings((s) => ({ ...s, model: models[0].id }));
+        const prefer = models.find((m) => m.id === DEFAULT_MODEL) ?? models[0];
+        setSettings((s) => ({ ...s, model: prefer.id }));
       }
     } catch {
       clearTimeout(timer);
@@ -149,17 +160,24 @@ export default function Page() {
       setBusy(true);
       setError(null);
       setStreamText('');
+      setStreamThink('');
       const ctl = new AbortController();
       abortRef.current = ctl;
 
       try {
-        const full = await streamChat({
+        const result = await streamChat({
           settings,
           conv,
           model,
           signal: ctl.signal,
           onDelta: (_d, all) => setStreamText(all),
+          onReasoning: (all) => setStreamThink(all),
         });
+        const full = result.content;
+
+        // Bila mode thinking aktif dan model hanya mengirim penalaran tanpa
+        // jawaban final, tampilkan penalaran itu supaya tidak tampak kosong.
+        const finalText = full.trim() ? full : result.reasoning;
 
         setConvs((prev) => {
           const next = prev.map((c) =>
@@ -168,7 +186,14 @@ export default function Page() {
                   ...c,
                   msgs: [
                     ...c.msgs,
-                    { id: uid('m'), role: 'assistant' as const, content: full, model, ts: Date.now() },
+                    {
+                      id: uid('m'),
+                      role: 'assistant' as const,
+                      content: finalText,
+                      reasoning: result.reasoning || undefined,
+                      model,
+                      ts: Date.now(),
+                    },
                   ],
                 }
               : c,
@@ -176,6 +201,7 @@ export default function Page() {
           return saveConversations(next);
         });
         setStreamText('');
+        setStreamThink('');
       } catch (e) {
         if ((e as Error).name === 'AbortError') {
           const partial = streamText;
@@ -191,6 +217,7 @@ export default function Page() {
                           id: uid('m'),
                           role: 'assistant' as const,
                           content: partial,
+                          reasoning: streamThink || undefined,
                           model,
                           ts: Date.now(),
                         },
@@ -208,16 +235,87 @@ export default function Page() {
           setOnline('off');
         }
         setStreamText('');
+        setStreamThink('');
       } finally {
         setBusy(false);
         abortRef.current = null;
       }
     },
-    [settings, toast, streamText],
+    [settings, streamThink, streamText, toast],
   );
+
+  /* ---------- perintah ---------- */
+  const clearChat = useCallback(() => {
+    if (!cur) return;
+    const updated = { ...cur, msgs: [] };
+    persist(convs.map((c) => (c.id === cur.id ? updated : c)));
+    setError(null);
+    toast('Percakapan dikosongkan');
+  }, [convs, cur, persist, toast]);
+
+  const exportChat = useCallback((): string => {
+    if (!cur || !cur.msgs.length) return '';
+    const lines = [`# ${cur.title}`, ''];
+    for (const m of cur.msgs) {
+      lines.push(m.role === 'user' ? '## Anda' : `## AI Rayhand${m.model ? ` (${m.model})` : ''}`);
+      if (m.reasoning) {
+        lines.push('<details><summary>Proses berpikir</summary>', '', m.reasoning, '', '</details>');
+      }
+      lines.push('', m.content, '');
+    }
+    return lines.join('\n');
+  }, [cur]);
+
+  const cmdCtx: CommandCtx = useMemo(
+    () => ({
+      settings,
+      setSettings,
+      setInput,
+      toast,
+      openSettings: () => setSettingsOpen(true),
+      newChat,
+      models: allModels,
+      clearChat,
+      exportChat,
+    }),
+    [settings, toast, newChat, allModels, clearChat, exportChat],
+  );
+
+  const cmdMenu = useCommandMenu(input);
+
+  const pickCommand = (c: Command) => {
+    // Perintah tanpa argumen langsung dijalankan; yang butuh argumen diisikan
+    // lalu kursor ditaruh di belakang supaya tinggal mengetik nilainya.
+    if (c.args) {
+      setInput(`${c.name} `);
+      cmdMenu.setSelected(0);
+      setTimeout(() => {
+        taRef.current?.focus();
+        grow();
+      }, 10);
+      return;
+    }
+    if (runCommand(c.name, cmdCtx)) {
+      setInput('');
+      if (taRef.current) taRef.current.style.height = 'auto';
+    }
+  };
 
   const send = useCallback(async () => {
     if (busy) return;
+
+    // Perintah (mis. "/model qwen3:8b") dijalankan lokal, tidak dikirim ke model.
+    const raw = input.trim();
+    if (raw.startsWith('/')) {
+      if (runCommand(raw, cmdCtx)) {
+        setInput('');
+        if (taRef.current) taRef.current.style.height = 'auto';
+        return;
+      }
+      toast(`Perintah tidak dikenal: ${raw.split(/\s+/)[0]} — ketik /help`);
+      return;
+    }
+
     const ready = att.items.filter((f) => !f.loading && f.text);
     const text = input.trim();
     if (!text && !ready.length) return;
@@ -257,7 +355,7 @@ export default function Page() {
     if (taRef.current) taRef.current.style.height = 'auto';
 
     await runStream(updated, settings.model);
-  }, [att, busy, convs, cur, input, persist, runStream, settings.model]);
+  }, [att, busy, cmdCtx, convs, cur, input, persist, runStream, settings.model, toast]);
 
   const regenerate = useCallback(
     (msgIndex: number) => {
@@ -487,10 +585,12 @@ export default function Page() {
                       id: 'streaming',
                       role: 'assistant',
                       content: streamText,
+                      reasoning: streamThink || undefined,
                       ts: Date.now(),
                     }}
                     streaming
                     streamText={streamText}
+                    streamThink={streamThink}
                     onToast={toast}
                   />
                 )}
@@ -570,6 +670,13 @@ export default function Page() {
               </div>
             )}
 
+            <CommandMenu
+              items={cmdMenu.items}
+              selected={cmdMenu.selected}
+              onPick={(c) => pickCommand(c)}
+              onHover={cmdMenu.setSelected}
+            />
+
             <div className="flex items-end gap-2 rounded-2xl border border-ink-600 bg-ink-850 px-2.5 py-2.5 pl-3 transition-all focus-within:border-accent-500 focus-within:shadow-[0_0_0_3px_rgba(91,140,255,.12)]">
               <input
                 ref={att.inputRef}
@@ -597,6 +704,33 @@ export default function Page() {
                   grow();
                 }}
                 onKeyDown={(e) => {
+                  if (cmdMenu.open) {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      cmdMenu.setSelected((i) => (i + 1) % cmdMenu.items.length);
+                      return;
+                    }
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      cmdMenu.setSelected(
+                        (i) => (i - 1 + cmdMenu.items.length) % cmdMenu.items.length,
+                      );
+                      return;
+                    }
+                    if (e.key === 'Tab' || (e.key === 'Enter' && cmdMenu.items.length === 1)) {
+                      const hit = cmdMenu.items[cmdMenu.selected];
+                      if (hit) {
+                        e.preventDefault();
+                        pickCommand(hit);
+                        return;
+                      }
+                    }
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setInput('');
+                      return;
+                    }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     void send();

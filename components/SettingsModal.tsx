@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { Settings } from '@/lib/types';
-import { DEFAULT_KEY, DEFAULT_SYSTEM_PROMPT, DEFAULT_URL } from '@/lib/config';
+import { DEFAULT_KEY, DEFAULT_MODEL, DEFAULT_SYSTEM_PROMPT, DEFAULT_URL } from '@/lib/config';
 
 interface Props {
   settings: Settings;
@@ -14,14 +14,18 @@ interface Props {
 export default function SettingsModal({ settings, open, onClose, onSave }: Props) {
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [temp, setTemp] = useState(0.7);
+  const [think, setThink] = useState(false);
   const [sys, setSys] = useState('');
 
   useEffect(() => {
     if (!open) return;
     setUrl(settings.url === DEFAULT_URL ? '' : settings.url);
     setKey(settings.key === DEFAULT_KEY ? '' : settings.key);
+    setModel(settings.model);
     setTemp(settings.temperature);
+    setThink(settings.thinking);
     setSys(settings.systemPrompt);
   }, [open, settings]);
 
@@ -60,6 +64,20 @@ export default function SettingsModal({ settings, open, onClose, onSave }: Props
         />
 
         <label className="mt-3.5 block text-[10.5px] font-semibold uppercase tracking-[.4px] text-faint">
+          Model
+        </label>
+        <input
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder={DEFAULT_MODEL}
+          className="mt-1.5 w-full rounded-[9px] border border-ink-600 bg-ink-750 px-3 py-2.5 font-mono text-[12.5px] outline-none transition-colors focus:border-accent-500"
+        />
+        <p className="mt-1 text-[11px] leading-relaxed text-faint">
+          Ketik ke kolom pesan juga bisa: <code className="text-accent-300">/model</code> untuk
+          daftar, <code className="text-accent-300">/model qwen3</code> untuk memilih sebagian nama.
+        </p>
+
+        <label className="mt-3.5 block text-[10.5px] font-semibold uppercase tracking-[.4px] text-faint">
           Temperature — {temp.toFixed(1)}
         </label>
         <input
@@ -71,6 +89,21 @@ export default function SettingsModal({ settings, open, onClose, onSave }: Props
           onChange={(e) => setTemp(Number(e.target.value))}
           className="mt-2 w-full accent-accent-500"
         />
+
+        <label className="mt-3.5 flex cursor-pointer items-center gap-2.5 text-[12.5px]">
+          <input
+            type="checkbox"
+            checked={think}
+            onChange={(e) => setThink(e.target.checked)}
+            className="h-4 w-4 accent-accent-500"
+          />
+          <span>
+            Mode berpikir (Qwen3)
+            <span className="block text-[11px] text-faint">
+              Model menampilkan penalaran lebih dulu. Lebih lambat, lebih teliti untuk soal sulit.
+            </span>
+          </span>
+        </label>
 
         <label className="mt-3.5 block text-[10.5px] font-semibold uppercase tracking-[.4px] text-faint">
           Prompt Sistem
@@ -87,7 +120,9 @@ export default function SettingsModal({ settings, open, onClose, onSave }: Props
             onClick={() => {
               setUrl('');
               setKey('');
+              setModel(DEFAULT_MODEL);
               setTemp(0.7);
+              setThink(false);
               setSys(DEFAULT_SYSTEM_PROMPT);
             }}
             className="rounded-[9px] px-4 py-2.5 text-[13px] text-dim transition-colors hover:text-[#e9ecf5]"
@@ -105,8 +140,9 @@ export default function SettingsModal({ settings, open, onClose, onSave }: Props
               onSave({
                 url: url.trim() || DEFAULT_URL,
                 key: key.trim() || DEFAULT_KEY,
-                model: settings.model,
+                model: model.trim() || DEFAULT_MODEL,
                 temperature: temp,
+                thinking: think,
                 systemPrompt: sys.trim() || DEFAULT_SYSTEM_PROMPT,
               })
             }

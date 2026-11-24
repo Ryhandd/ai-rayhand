@@ -10,6 +10,7 @@ interface Props {
   msg: Msg;
   streaming?: boolean;
   streamText?: string;
+  streamThink?: string;
   onRegenerate?: () => void;
   onToast: (t: string) => void;
 }
@@ -27,12 +28,15 @@ export default function Message({
   msg,
   streaming,
   streamText,
+  streamThink,
   onRegenerate,
   onToast,
 }: Props) {
   const [showRaw, setShowRaw] = useState(false);
+  const [showThink, setShowThink] = useState(false);
   const isUser = msg.role === 'user';
   const body = streaming ? (streamText ?? '') : msg.content;
+  const think = streaming ? (streamThink ?? '') : (msg.reasoning ?? '');
 
   // buang lampiran dokumen dari tampilan (tetap dipakai model)
   const displayText = (() => {
@@ -63,8 +67,7 @@ export default function Message({
           )}
         </div>
 
-        {isUser ? (
-          <div className="rounded-[14px] border border-ink-600 bg-ink-750 px-3.5 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words">
+        {isUser ? (          <div className="rounded-[14px] border border-ink-600 bg-ink-750 px-3.5 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words">
             {displayText || <span className="text-faint">(dokumen tanpa teks)</span>}
             {!!msg.files?.length && (
               <div className="mt-2.5 flex flex-wrap gap-2 border-t border-ink-600 pt-2.5">
@@ -83,7 +86,28 @@ export default function Message({
           </div>
         ) : (
           <>
-            {streaming && !body ? (
+            {!!think && (
+              <div className="mb-2 overflow-hidden rounded-xl border border-ink-600 bg-ink-800/60">
+                <button
+                  onClick={() => setShowThink((v) => !v)}
+                  className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[11.5px] font-medium text-faint transition-colors hover:text-accent-300"
+                  aria-expanded={showThink}
+                >
+                  <span className="text-[9px]">{showThink ? '▼' : '▶'}</span>
+                  {streaming ? 'Sedang berpikir…' : 'Proses berpikir'}
+                  <span className="text-[10px] text-faint">
+                    ({think.length.toLocaleString('id-ID')} karakter)
+                  </span>
+                </button>
+                {showThink && (
+                  <div className="max-h-[280px] overflow-y-auto border-t border-ink-600 px-3 py-2.5 text-[12px] leading-relaxed whitespace-pre-wrap text-dim">
+                    {think}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {streaming && !body && !think ? (
               <div className="flex items-center gap-1 py-1">
                 <span className="h-1.5 w-1.5 animate-dot-bounce rounded-full bg-dim" />
                 <span
